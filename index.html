@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="BrainBase">
+  <title>BrainBase</title>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Alpine.js -->
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <!-- Dexie.js (IndexedDB) -->
+  <script src="https://unpkg.com/dexie@3/dist/dexie.js"></script>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bb: {
+              bg:      '#09090E',
+              surface: '#111118',
+              card:    '#18181F',
+              border:  '#252530',
+              accent:  '#7C5CFC',
+              success: '#22C55E',
+              warn:    '#F59E0B',
+              muted:   '#64647A',
+              text:    '#F0F0FA',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+    html, body { background: #09090E; overscroll-behavior: none; height: 100%; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Yu Gothic', sans-serif; }
+    /* Safe area support for iPhone notch */
+    .pb-safe { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+    /* Custom scrollbar */
+    ::-webkit-scrollbar { width: 3px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #252530; border-radius: 99px; }
+    /* Accent glow */
+    .accent-glow { box-shadow: 0 0 20px rgba(124, 92, 252, 0.3); }
+    /* Card hover */
+    .card-hover { transition: background 0.15s ease; }
+    .card-hover:active { background: #1F1F28 !important; }
+    /* Progress bar */
+    .progress-bar { transition: width 0.5s ease; }
+    /* Page transition */
+    [x-cloak] { display: none !important; }
+  </style>
+</head>
+
+<body class="text-bb-text" x-data="brainbase()" x-init="init()" x-cloak>
+<div class="max-w-[430px] mx-auto min-h-screen flex flex-col relative bg-bb-bg">
+
+  <!-- ===== HEADER ===== -->
+  <header class="sticky top-0 z-40 bg-bb-bg/90 backdrop-blur-md border-b border-bb-border">
+    <div class="flex items-center justify-between px-4 py-3">
+      <!-- Logo + Page Title -->
+      <div class="flex items-center gap-2.5">
+        <div class="w-7 h-7 rounded-lg bg-bb-accent flex items-center justify-center accent-glow">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M7 1C7 1 3 3.5 3 7C3 9.2 4.8 11 7 11C9.2 11 11 9.2 11 7C11 3.5 7 1Z" fill="white" opacity="0.9"/>
+            <circle cx="7" cy="7" r="1.5" fill="white"/>
+          </svg>
+        </div>
+        <div>
+          <p class="text-[11px] text-bb-muted leading-none mb-0.5">BrainBase</p>
+          <p class="text-[14px] font-semibold leading-none" x-text="pageTitles[currentPage]"></p>
+        </div>
+      </div>
+      <!-- Right actions -->
+      <div class="flex items-center gap-1">
+        <button class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-bb-card transition-colors">
+          <i data-lucide="search" class="w-4 h-4 text-bb-muted"></i>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===== MAIN CONTENT ===== -->
+  <main class="flex-1 overflow-y-auto pb-24">
+
+    <!-- ==================== TODAY PAGE ==================== -->
+    <div x-show="currentPage === 'today'"
+         x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0 translateY(4px)"
+         x-transition:enter-end="opacity-100 translateY(0)">
+
+      <!-- Greeting -->
+      <div class="px-4 pt-5 pb-2">
+        <p class="text-bb-muted text-xs mb-1" x-text="todayDateStr"></p>
+        <h2 class="text-xl font-bold" x-text="greetingText"></h2>
+      </div>
+
+      <!-- Stats Row -->
+      <div class="px-4 py-3 grid grid-cols-3 gap-2">
+        <div class="bg-bb-card rounded-xl p-3 border border-bb-border">
+          <p class="text-bb-muted text-[10px] mb-1">今日のタスク</p>
+          <p class="text-xl font-bold text-bb-accent" x-text="todayStats.tasks"></p>
+        </div>
+        <div class="bg-bb-card rounded-xl p-3 border border-bb-border">
+          <p class="text-bb-muted text-[10px] mb-1">完了</p>
+          <p class="text-xl font-bold text-bb-success" x-text="todayStats.done"></p>
+        </div>
+        <div class="bg-bb-card rounded-xl p-3 border border-bb-border">
+          <p class="text-bb-muted text-[10px] mb-1">アイデア</p>
+          <p class="text-xl font-bold text-bb-warn" x-text="todayStats.ideas"></p>
+        </div>
+      </div>
+
+      <!-- Today's Focus -->
+      <div class="px-4 py-2">
+        <div class="flex items-center justify-between mb-3">
+          <p class="text-xs font-semibold text-bb-muted uppercase tracking-wider">今日のフォーカス</p>
+          <button @click="navigate('tasks')" class="text-[11px] text-bb-accent">すべて見る</button>
+        </div>
+
+        <!-- Empty state -->
+        <template x-if="todayTasks.length === 0">
+          <div class="bg-bb-card border border-bb-border rounded-xl p-6 flex flex-col items-center gap-3">
+            <div class="w-12 h-12 rounded-full bg-bb-surface flex items-center justify-center">
+              <i data-lucide="check-circle-2" class="w-6 h-6 text-bb-muted"></i>
+            </div>
+            <div class="text-center">
+              <p class="text-sm text-bb-text font-medium">今日のタスクはありません</p>
+              <p class="text-xs text-bb-muted mt-1">タスクを追加して、今日を動かそう</p>
+            </div>
+            <button @click="navigate('tasks')" class="text-xs bg-bb-accent text-white px-4 py-2 rounded-lg font-medium">
+              タスクを追加
+            </button>
+          </div>
+        </template>
+
+        <!-- Task items -->
+        <template x-for="task in todayTasks" :key="task.id">
+          <div class="bg-bb-card border border-bb-border rounded-xl p-4 mb-2 flex items-center gap-3 card-hover">
+            <button @click="toggleTask(task.id)"
+                    :class="task.done ? 'bg-bb-success border-bb-success' : 'border-bb-border'"
+                    class="w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-all">
+              <i x-show="task.done" data-lucide="check" class="w-3 h-3 text-white"></i>
+            </button>
+            <div class="flex-1 min-w-0">
+              <p :class="task.done ? 'line-through text-bb-muted' : 'text-bb-text'"
+                 class="text-sm font-medium truncate" x-text="task.title"></p>
+              <p x-show="task.project" class="text-[10px] text-bb-muted mt-0.5" x-text="task.project"></p>
+            </div>
+            <span x-show="task.priority === 'high'"
+                  class="text-[10px] text-bb-warn bg-amber-900/20 px-2 py-0.5 rounded-full flex-shrink-0">高</span>
+          </div>
+        </template>
+      </div>
+
+      <!-- GitHub Activity -->
+      <div class="px-4 py-2">
+        <div class="flex items-center justify-between mb-3">
+          <p class="text-xs font-semibold text-bb-muted uppercase tracking-wider">GitHub 活動</p>
+        </div>
+        <div class="bg-bb-card border border-bb-border rounded-xl p-5 flex flex-col items-center gap-3">
+          <i data-lucide="github" class="w-8 h-8 text-bb-muted"></i>
+          <div class="text-center">
+            <p class="text-sm text-bb-text font-medium">GitHub 未連携</p>
+            <p class="text-xs text-bb-muted mt-1">トークンを設定してコミットを表示</p>
+          </div>
+          <button @click="navigate('settings')" class="text-xs border border-bb-border text-bb-muted px-4 py-2 rounded-lg">
+            設定へ
+          </button>
+        </div>
+      </div>
+
+      <!-- Recent Ideas -->
+      <div class="px-4 py-2 pb-4">
+        <div class="flex items-center justify-between mb-3">
+          <p class="text-xs font-semibold text-bb-muted uppercase tracking-wider">最近のアイデア</p>
+          <button @click="navigate('ideas')" class="text-[11px] text-bb-accent">すべて見る</button>
+        </div>
+        <template x-if="recentIdeas.length === 0">
+          <div class="bg-bb-card border border-dashed border-bb-border rounded-xl p-4 flex items-center gap-3">
+            <i data-lucide="lightbulb" class="w-5 h-5 text-bb-muted flex-shrink-0"></i>
+            <p class="text-xs text-bb-muted">アイデアをメモしよう</p>
+          </div>
+        </template>
+        <template x-for="idea in recentIdeas" :key="idea.id">
+          <div class="bg-bb-card border border-bb-border rounded-xl p-3 mb-2">
+            <p class="text-sm text-bb-text truncate" x-text="idea.title"></p>
+            <p class="text-[10px] text-bb-muted mt-1" x-text="formatDate(idea.createdAt)"></p>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ==================== TASKS PAGE ==================== -->
+    <div x-show="currentPage === 'tasks'"
+         x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0"
+         x-transition:enter-end="opacity-100">
+
+      <!-- Filter tabs -->
+      <div class="px-4 pt-4 flex gap-2 overflow-x-auto pb-3 scrollbar-hide">
+        <template x-for="f in taskFilters" :key="f.key">
+          <button @click="activeFilter = f.key"
+                  :class="activeFilter === f.key
+                    ? 'bg-bb-accent text-white'
+                    : 'bg-bb-card border border-bb-border text-bb-muted'"
+                  class="px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all"
+                  x-text="f.label"></button>
+        </template>
+      </div>
+
+      <!-- Task list -->
+      <div class="px-4 pb-4">
+        <template x-if="filteredTasks.length === 0">
+          <div class="flex flex-col items-center gap-4 py-16">
+            <div class="w-16 h-16 rounded-2xl bg-bb-card flex items-center justify-center">
+              <i data-lucide="inbox" class="w-8 h-8 text-bb-muted"></i>
+            </div>
+            <div class="text-center">
+              <p class="text-bb-text font-medium">タスクがありません</p>
+              <p class="text-sm text-bb-muted mt-1">＋ ボタンで追加しよう</p>
+            </div>
+          </div>
+        </template>
+
+        <template x-for="task in filteredTasks" :key="task.id">
+          <div class="bg-bb-card border border-bb-border rounded-xl p-4 mb-2 card-hover">
+            <div class="flex items-start gap-3">
+              <button @click="toggleTask(task.id)"
+                      :class="task.done ? 'bg-bb-success border-bb-success' : 'border-bb-border'"
+                      class="mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-all">
+                <i x-show="task.done" data-lucide="check" class="w-3 h-3 text-white"></i>
+              </button>
+              <div class="flex-1 min-w-0">
+                <p :class="task.done ? 'line-through text-bb-muted' : 'text-bb-text'"
+                   class="text-sm font-medium" x-text="task.title"></p>
+                <div class="flex items-center gap-2 mt-1.5">
+                  <span x-show="task.project" class="text-[10px] bg-bb-surface text-bb-muted px-2 py-0.5 rounded-full" x-text="task.project"></span>
+                  <span x-show="task.dueDate" class="text-[10px] text-bb-muted" x-text="task.dueDate ? '期限: ' + formatDate(task.dueDate) : ''"></span>
+                </div>
+              </div>
+              <div class="flex items-center gap-2">
+                <span x-show="task.priority === 'high'" class="text-[10px] text-bb-warn">●</span>
+                <button @click="deleteTask(task.id)" class="w-6 h-6 flex items-center justify-center text-bb-muted hover:text-red-400 transition-colors">
+                  <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ==================== IDEAS PAGE ==================== -->
+    <div x-show="currentPage === 'ideas'"
+         x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0"
+         x-transition:enter-end="opacity-100">
+
+      <!-- Magic Project CTA -->
+      <div class="px-4 pt-4">
+        <button @click="showMagicModal = true"
+                class="w-full bg-gradient-to-r from-bb-accent to-purple-500 rounded-2xl p-4 flex items-center gap-3 accent-glow">
+          <div class="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center flex-shrink-0">
+            <i data-lucide="sparkles" class="w-5 h-5 text-white"></i>
+          </div>
+          <div class="text-left">
+            <p class="text-white font-semibold text-sm">Magic Project</p>
+            <p class="text-white/70 text-xs mt-0.5">アイデア → AIがタスクに分解</p>
+          </div>
+          <i data-lucide="chevron-right" class="w-4 h-4 text-white/60 ml-auto"></i>
+        </button>
+      </div>
+
+      <!-- Ideas list -->
+      <div class="px-4 py-4">
+        <p class="text-xs font-semibold text-bb-muted uppercase tracking-wider mb-3">アイデアメモ</p>
+
+        <template x-if="ideas.length === 0">
+          <div class="flex flex-col items-center gap-4 py-12">
+            <div class="w-16 h-16 rounded-2xl bg-bb-card flex items-center justify-center">
+              <i data-lucide="lightbulb" class="w-8 h-8 text-bb-muted"></i>
+            </div>
+            <div class="text-center">
+              <p class="text-bb-text font-medium">アイデアをメモしよう</p>
+              <p class="text-sm text-bb-muted mt-1">思いついたらすぐ残せる</p>
+            </div>
+          </div>
+        </template>
+
+        <template x-for="idea in ideas" :key="idea.id">
+          <div class="bg-bb-card border border-bb-border rounded-xl p-4 mb-2 card-hover">
+            <div class="flex items-start justify-between gap-2">
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-bb-text" x-text="idea.title"></p>
+                <p x-show="idea.body" class="text-xs text-bb-muted mt-1 line-clamp-2" x-text="idea.body"></p>
+                <p class="text-[10px] text-bb-muted mt-2" x-text="formatDate(idea.createdAt)"></p>
+              </div>
+              <div class="flex flex-col gap-1">
+                <span x-show="idea.converted"
+                      class="text-[10px] bg-bb-success/10 text-bb-success px-2 py-0.5 rounded-full whitespace-nowrap">
+                  変換済み
+                </span>
+                <button @click="deleteIdea(idea.id)" class="w-6 h-6 flex items-center justify-center text-bb-muted hover:text-red-400">
+                  <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ==================== POST PAGE ==================== -->
+    <div x-show="currentPage === 'post'"
+         x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0"
+         x-transition:enter-end="opacity-100">
+
+      <div class="px-4 pt-4">
+        <p class="text-xs font-semibold text-bb-muted uppercase tracking-wider mb-3">SNS 下書き</p>
+
+        <template x-if="drafts.length === 0">
+          <div class="flex flex-col items-center gap-4 py-16">
+            <div class="w-16 h-16 rounded-2xl bg-bb-card flex items-center justify-center">
+              <i data-lucide="pen-line" class="w-8 h-8 text-bb-muted"></i>
+            </div>
+            <div class="text-center">
+              <p class="text-bb-text font-medium">下書きがありません</p>
+              <p class="text-sm text-bb-muted mt-1">＋ で新しい投稿を作成</p>
+            </div>
+          </div>
+        </template>
+
+        <template x-for="draft in drafts" :key="draft.id">
+          <div class="bg-bb-card border border-bb-border rounded-xl p-4 mb-2 card-hover">
+            <div class="flex items-start justify-between">
+              <p class="text-sm text-bb-text flex-1 mr-3 line-clamp-3" x-text="draft.body"></p>
+              <div class="flex flex-col gap-2 flex-shrink-0">
+                <button @click="copyDraft(draft)" class="w-7 h-7 flex items-center justify-center bg-bb-surface rounded-lg">
+                  <i data-lucide="copy" class="w-3.5 h-3.5 text-bb-muted"></i>
+                </button>
+                <button @click="postToX(draft)" class="w-7 h-7 flex items-center justify-center bg-bb-surface rounded-lg">
+                  <svg class="w-3.5 h-3.5 text-bb-muted" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.748l7.73-8.835L1.254 2.25H8.08l4.259 5.631 5.905-5.631zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="flex items-center justify-between mt-3">
+              <p class="text-[10px] text-bb-muted" x-text="formatDate(draft.createdAt)"></p>
+              <p class="text-[10px]" :class="draft.body.length > 140 ? 'text-bb-warn' : 'text-bb-muted'"
+                 x-text="draft.body.length + '/280'"></p>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ==================== SETTINGS PAGE ==================== -->
+    <div x-show="currentPage === 'settings'"
+         x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0"
+         x-transition:enter-end="opacity-100">
+
+      <div class="px-4 pt-4 space-y-5">
+
+        <!-- Claude API Key -->
+        <div>
+          <p class="text-xs font-semibold text-bb-muted uppercase tracking-wider mb-3">AI 設定</p>
+          <div class="bg-bb-card border border-bb-border rounded-xl p-4 space-y-3">
+            <div>
+              <label class="text-xs text-bb-muted block mb-1.5">Claude API キー (BYOK)</label>
+              <div class="flex gap-2">
+                <input type="password" x-model="settings.claudeKey" placeholder="sk-ant-..."
+                       class="flex-1 bg-bb-surface border border-bb-border rounded-lg px-3 py-2 text-sm text-bb-text placeholder-bb-muted/50 outline-none focus:border-bb-accent transition-colors">
+                <button @click="saveSettings()"
+                        class="px-3 py-2 bg-bb-accent text-white text-xs rounded-lg font-medium transition-opacity active:opacity-70">
+                  保存
+                </button>
+              </div>
+              <p class="text-[10px] text-bb-muted mt-1.5">Magic Project機能に使用。キーはこのデバイスのみに保存されます。</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- GitHub Token -->
+        <div>
+          <p class="text-xs font-semibold text-bb-muted uppercase tracking-wider mb-3">GitHub 連携</p>
+          <div class="bg-bb-card border border-bb-border rounded-xl p-4">
+            <label class="text-xs text-bb-muted block mb-1.5">Personal Access Token</label>
+            <div class="flex gap-2">
+              <input type="password" x-model="settings.githubToken" placeholder="ghp_..."
+                     class="flex-1 bg-bb-surface border border-bb-border rounded-lg px-3 py-2 text-sm text-bb-text placeholder-bb-muted/50 outline-none focus:border-bb-accent transition-colors">
+              <button @click="saveSettings()"
+                      class="px-3 py-2 bg-bb-accent text-white text-xs rounded-lg font-medium">
+                保存
+              </button>
+            </div>
+            <p class="text-[10px] text-bb-muted mt-1.5">Today画面のコミット表示に使用。スコープ: repo (read), read:user</p>
+          </div>
+        </div>
+
+        <!-- App Info -->
+        <div>
+          <p class="text-xs font-semibold text-bb-muted uppercase tracking-wider mb-3">アプリ情報</p>
+          <div class="bg-bb-card border border-bb-border rounded-xl divide-y divide-bb-border">
+            <div class="flex items-center justify-between px-4 py-3">
+              <span class="text-sm text-bb-text">バージョン</span>
+              <span class="text-sm text-bb-muted">v0.1.0</span>
+            </div>
+            <div class="flex items-center justify-between px-4 py-3">
+              <span class="text-sm text-bb-text">データ保存</span>
+              <span class="text-sm text-bb-muted">このデバイスのみ</span>
+            </div>
+            <div class="flex items-center justify-between px-4 py-3">
+              <span class="text-sm text-bb-text">制作</span>
+              <span class="text-sm text-bb-muted">starflower</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Danger zone -->
+        <div>
+          <p class="text-xs font-semibold text-red-500/60 uppercase tracking-wider mb-3">データ管理</p>
+          <div class="bg-bb-card border border-red-500/20 rounded-xl p-4">
+            <button @click="resetAllData()"
+                    class="w-full text-sm text-red-400 py-2 rounded-lg border border-red-500/30 hover:bg-red-500/10 transition-colors">
+              すべてのデータを削除
+            </button>
+          </div>
+        </div>
+
+        <div class="pb-6 text-center">
+          <p class="text-[10px] text-bb-muted">BrainBase — 移動中が、仕事の本番だ。</p>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ===== FAB (Floating Action Button) ===== -->
+  <button @click="openAddModal()"
+          x-show="currentPage !== 'settings'"
+          class="fixed bottom-24 right-4 w-14 h-14 bg-bb-accent rounded-2xl flex items-center justify-center shadow-lg accent-glow transition-transform active:scale-95 z-40">
+    <i data-lucide="plus" class="w-6 h-6 text-white"></i>
+  </button>
+
+  <!-- ===== BOTTOM NAVIGATION ===== -->
+  <nav class="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] bg-bb-surface/95 backdrop-blur-md border-t border-bb-border z-50">
+    <div class="flex items-center justify-around px-2 pt-2 pb-safe">
+
+      <button @click="navigate('today')"
+              :class="currentPage === 'today' ? 'text-bb-accent' : 'text-bb-muted'"
+              class="flex flex-col items-center gap-1 px-4 py-1 rounded-xl transition-colors">
+        <i data-lucide="sun" class="w-5 h-5"></i>
+        <span class="text-[9px] font-medium">Today</span>
+      </button>
+
+      <button @click="navigate('tasks')"
+              :class="currentPage === 'tasks' ? 'text-bb-accent' : 'text-bb-muted'"
+              class="flex flex-col items-center gap-1 px-4 py-1 rounded-xl transition-colors">
+        <i data-lucide="check-square" class="w-5 h-5"></i>
+        <span class="text-[9px] font-medium">Tasks</span>
+      </button>
+
+      <button @click="navigate('ideas')"
+              :class="currentPage === 'ideas' ? 'text-bb-accent' : 'text-bb-muted'"
+              class="flex flex-col items-center gap-1 px-4 py-1 rounded-xl transition-colors">
+        <i data-lucide="lightbulb" class="w-5 h-5"></i>
+        <span class="text-[9px] font-medium">Ideas</span>
+      </button>
+
+      <button @click="navigate('post')"
+              :class="currentPage === 'post' ? 'text-bb-accent' : 'text-bb-muted'"
+              class="flex flex-col items-center gap-1 px-4 py-1 rounded-xl transition-colors">
+        <i data-lucide="send" class="w-5 h-5"></i>
+        <span class="text-[9px] font-medium">Post</span>
+      </button>
+
+      <button @click="navigate('settings')"
+              :class="currentPage === 'settings' ? 'text-bb-accent' : 'text-bb-muted'"
+              class="flex flex-col items-center gap-1 px-4 py-1 rounded-xl transition-colors">
+        <i data-lucide="settings" class="w-5 h-5"></i>
+        <span class="text-[9px] font-medium">Settings</span>
+      </button>
+
+    </div>
+  </nav>
+
+  <!-- ===== ADD MODAL ===== -->
+  <div x-show="showAddModal"
+       x-transition:enter="transition ease-out duration-200"
+       x-transition:enter-start="opacity-0"
+       x-transition:enter-end="opacity-100"
+       class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end justify-center"
+       @click.self="showAddModal = false">
+
+    <div x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="translate-y-full"
+         x-transition:enter-end="translate-y-0"
+         class="w-full max-w-[430px] bg-bb-surface rounded-t-2xl border-t border-bb-border p-5">
+
+      <!-- Modal Header -->
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-semibold text-bb-text" x-text="addModalTitle()"></h3>
+        <button @click="showAddModal = false" class="w-7 h-7 flex items-center justify-center rounded-full bg-bb-card">
+          <i data-lucide="x" class="w-4 h-4 text-bb-muted"></i>
+        </button>
+      </div>
+
+      <!-- Add Task Form -->
+      <template x-if="currentPage === 'tasks' || currentPage === 'today'">
+        <div class="space-y-3">
+          <input type="text" x-model="newTask.title" placeholder="タスク名"
+                 @keyup.enter="addTask()"
+                 class="w-full bg-bb-card border border-bb-border rounded-xl px-4 py-3 text-sm text-bb-text placeholder-bb-muted/50 outline-none focus:border-bb-accent transition-colors">
+          <input type="text" x-model="newTask.project" placeholder="プロジェクト（任意）"
+                 class="w-full bg-bb-card border border-bb-border rounded-xl px-4 py-3 text-sm text-bb-text placeholder-bb-muted/50 outline-none focus:border-bb-accent transition-colors">
+          <div class="flex gap-2">
+            <select x-model="newTask.priority"
+                    class="flex-1 bg-bb-card border border-bb-border rounded-xl px-4 py-3 text-sm text-bb-text outline-none focus:border-bb-accent">
+              <option value="normal">優先度：普通</option>
+              <option value="high">優先度：高</option>
+              <option value="low">優先度：低</option>
+            </select>
+            <input type="date" x-model="newTask.dueDate"
+                   class="flex-1 bg-bb-card border border-bb-border rounded-xl px-4 py-3 text-sm text-bb-text outline-none focus:border-bb-accent">
+          </div>
+          <button @click="addTask()"
+                  class="w-full bg-bb-accent text-white py-3 rounded-xl font-medium transition-opacity active:opacity-70">
+            追加する
+          </button>
+        </div>
+      </template>
+
+      <!-- Add Idea Form -->
+      <template x-if="currentPage === 'ideas'">
+        <div class="space-y-3">
+          <input type="text" x-model="newIdea.title" placeholder="アイデアのタイトル"
+                 class="w-full bg-bb-card border border-bb-border rounded-xl px-4 py-3 text-sm text-bb-text placeholder-bb-muted/50 outline-none focus:border-bb-accent transition-colors">
+          <textarea x-model="newIdea.body" placeholder="詳細メモ（任意）" rows="3"
+                    class="w-full bg-bb-card border border-bb-border rounded-xl px-4 py-3 text-sm text-bb-text placeholder-bb-muted/50 outline-none focus:border-bb-accent transition-colors resize-none"></textarea>
+          <button @click="addIdea()"
+                  class="w-full bg-bb-accent text-white py-3 rounded-xl font-medium transition-opacity active:opacity-70">
+            保存する
+          </button>
+        </div>
+      </template>
+
+      <!-- Add Draft Form -->
+      <template x-if="currentPage === 'post'">
+        <div class="space-y-3">
+          <textarea x-model="newDraft.body" placeholder="投稿内容を書く..." rows="5"
+                    class="w-full bg-bb-card border border-bb-border rounded-xl px-4 py-3 text-sm text-bb-text placeholder-bb-muted/50 outline-none focus:border-bb-accent transition-colors resize-none"></textarea>
+          <div class="flex items-center justify-between">
+            <p class="text-xs" :class="newDraft.body.length > 280 ? 'text-red-400' : 'text-bb-muted'"
+               x-text="newDraft.body.length + '/280'"></p>
+          </div>
+          <button @click="addDraft()"
+                  class="w-full bg-bb-accent text-white py-3 rounded-xl font-medium transition-opacity active:opacity-70">
+            下書き保存
+          </button>
+        </div>
+      </template>
+
+      <div class="h-safe"></div>
+    </div>
+  </div>
+
+  <!-- ===== MAGIC PROJECT MODAL ===== -->
+  <div x-show="showMagicModal"
+       x-transition:enter="transition ease-out duration-200"
+       x-transition:enter-start="opacity-0"
+       x-transition:enter-end="opacity-100"
+       class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end justify-center"
+       @click.self="showMagicModal = false">
+
+    <div x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="translate-y-full"
+         x-transition:enter-end="translate-y-0"
+         class="w-full max-w-[430px] bg-bb-surface rounded-t-2xl border-t border-bb-border p-5">
+
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-9 h-9 rounded-xl bg-bb-accent flex items-center justify-center">
+          <i data-lucide="sparkles" class="w-5 h-5 text-white"></i>
+        </div>
+        <div>
+          <h3 class="font-semibold text-bb-text">Magic Project</h3>
+          <p class="text-[11px] text-bb-muted">AIがアイデアをタスクに分解</p>
+        </div>
+        <button @click="showMagicModal = false" class="ml-auto w-7 h-7 flex items-center justify-center rounded-full bg-bb-card">
+          <i data-lucide="x" class="w-4 h-4 text-bb-muted"></i>
+        </button>
+      </div>
+
+      <div class="space-y-3">
+        <textarea x-model="magicInput" placeholder="やりたいことを書いてください。例：「ブログを始めて月1万円稼ぎたい」" rows="4"
+                  class="w-full bg-bb-card border border-bb-border rounded-xl px-4 py-3 text-sm text-bb-text placeholder-bb-muted/50 outline-none focus:border-bb-accent transition-colors resize-none"></textarea>
+
+        <template x-if="!settings.claudeKey">
+          <p class="text-xs text-bb-warn bg-amber-900/20 px-3 py-2 rounded-lg">
+            ⚠️ Claude APIキーを設定してください（Settings画面）
+          </p>
+        </template>
+
+        <!-- Magic result -->
+        <template x-if="magicResult">
+          <div class="bg-bb-card border border-bb-accent/30 rounded-xl p-4">
+            <p class="text-xs text-bb-accent font-semibold mb-2" x-text="magicResult.projectName"></p>
+            <p class="text-xs text-bb-muted mb-3" x-text="magicResult.summary"></p>
+            <div class="space-y-1.5">
+              <template x-for="(task, i) in magicResult.tasks" :key="i">
+                <div class="flex items-center gap-2">
+                  <div class="w-5 h-5 rounded-full bg-bb-accent/20 text-bb-accent text-[10px] flex items-center justify-center flex-shrink-0" x-text="i+1"></div>
+                  <p class="text-xs text-bb-text" x-text="task.title"></p>
+                </div>
+              </template>
+            </div>
+            <button @click="adoptMagicResult()"
+                    class="w-full mt-3 bg-bb-success text-white py-2.5 rounded-xl text-sm font-medium">
+              タスクに追加する
+            </button>
+          </div>
+        </template>
+
+        <button @click="runMagicProject()"
+                :disabled="magicLoading || !settings.claudeKey"
+                :class="(magicLoading || !settings.claudeKey) ? 'opacity-40' : ''"
+                class="w-full bg-gradient-to-r from-bb-accent to-purple-500 text-white py-3 rounded-xl font-medium flex items-center justify-center gap-2">
+          <i x-show="!magicLoading" data-lucide="sparkles" class="w-4 h-4"></i>
+          <svg x-show="magicLoading" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          <span x-text="magicLoading ? '生成中...' : 'AIでタスク生成'"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== TOAST ===== -->
+  <div x-show="toast.show"
+       x-transition:enter="transition ease-out duration-200"
+       x-transition:enter-start="opacity-0 translate-y-2"
+       x-transition:enter-end="opacity-100 translate-y-0"
+       x-transition:leave="transition ease-in duration-150"
+       x-transition:leave-start="opacity-100"
+       x-transition:leave-end="opacity-0"
+       :class="toast.type === 'error' ? 'bg-red-900/90 border-red-700/50' : 'bg-bb-card border-bb-border'"
+       class="fixed top-16 left-1/2 -translate-x-1/2 z-[100] px-4 py-2.5 rounded-xl border text-sm text-bb-text shadow-xl"
+       x-text="toast.message">
+  </div>
+
+</div>
+
+<script src="db.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
