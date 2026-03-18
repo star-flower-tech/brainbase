@@ -1,5 +1,5 @@
 // BrainBase Service Worker
-const CACHE = 'brainbase-v1';
+const CACHE = 'brainbase-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -24,7 +24,6 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  // CDNリソースやAPIはネットワーク優先
   if (e.request.url.includes('cdn.') || e.request.url.includes('localhost:3001')) {
     return;
   }
