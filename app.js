@@ -22,7 +22,7 @@ function brainbase() {
     settings: { claudeKey: '', githubToken: '' },
 
     // ===== Tasks タブ =====
-    taskTab:      'tasks',   // 'tasks' | 'goals'
+    taskTab:      'tasks',
     activeFilter: 'all',
     taskFilters: [
       { key:'all', label:'すべて' },
@@ -71,7 +71,6 @@ function brainbase() {
     async init() {
       this.setDateAndGreeting();
 
-      // ハッシュルーティング
       const hash = window.location.hash.slice(1);
       if (hash && this.pageTitles[hash]) this.currentPage = hash;
       window.addEventListener('hashchange', () => {
@@ -82,11 +81,13 @@ function brainbase() {
         }
       });
 
-      // APIサーバーの接続チェック（タイムアウト1秒）
-      await this.checkApiConnection(silent = true);
+      // localhostからのアクセス時のみAPIチェック（スマホ・GitHub Pagesはスキップ）
+      const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      if (isLocal) {
+        await this.checkApiConnection(true);
+      }
 
       if (!this.isApiMode) {
-        // フォールバック: IndexedDB
         await db.open();
         await this.seedBusinesses();
       }
@@ -95,27 +96,20 @@ function brainbase() {
       this.$nextTick(() => lucide.createIcons());
     },
 
-    // APIサーバー接続チェック
     async checkApiConnection(silent = false) {
       try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 1000);
         const res = await fetch(`${API_BASE}/api/health`, { signal: controller.signal });
         clearTimeout(timer);
-        if (res.ok) {
-          this.isApiMode = true;
-          if (!silent) this.showToast('ローカルサーバーに接続しました 🟢', 'info');
-        } else {
-          this.isApiMode = false;
-          if (!silent) this.showToast('サーバーに接続できませんでした 🔴', 'error');
-        }
+        this.isApiMode = res.ok;
+        if (!silent) this.showToast(res.ok ? 'サーバーに接続しました 🟢' : '接続失敗 🔴', res.ok ? 'info' : 'error');
       } catch {
         this.isApiMode = false;
-        if (!silent) this.showToast('サーバーが起動していません。IndexedDBモードで動作中 🔴', 'error');
+        if (!silent) this.showToast('サーバーが起動していません 🔴', 'error');
       }
     },
 
-    // 事業の初期データ投入（IndexedDBモード、初回のみ）
     async seedBusinesses() {
       const count = await db.businesses.count();
       if (count === 0) {
@@ -153,13 +147,11 @@ function brainbase() {
         this.ideas      = ideas     || [];
         this.drafts     = [];
       } catch {
-        // APIが途中で落ちた場合はフォールバック
         this.isApiMode = false;
         await db.open();
         await this.loadAllFromDb();
         return;
       }
-
       this.todayStats.tasks = this.tasks.filter(t => !t.done).length;
       this.todayStats.done  = this.tasks.filter(t => t.done).length;
       this.todayStats.ideas = this.ideas.length;
@@ -207,14 +199,12 @@ function brainbase() {
       return this.goals.filter(g => g.businessId === businessId);
     },
 
-    // 事業の進捗（ゴールの平均progress）
     businessProgress(businessId) {
       const gs = this.goalsForBusiness(businessId);
       if (!gs.length) return 0;
       return Math.round(gs.reduce((s, g) => s + (g.progress || 0), 0) / gs.length);
     },
 
-    // 事業ごとのアクティブタスク数
     tasksForBusiness(businessId) {
       return this.tasks.filter(t => t.businessId === businessId && !t.done).length;
     },
@@ -222,7 +212,6 @@ function brainbase() {
     async addBusiness() {
       if (!this.newBusiness.name.trim()) return;
       if (this.isApiMode) {
-        // APIモードでは事業追加APIがないためIndexedDBに保存しない（将来対応）
         this.showToast('APIモードでは事業追加はサーバー側で管理されます', 'error');
         return;
       }
@@ -286,7 +275,6 @@ function brainbase() {
       if (!this.isApiMode) {
         await db.goals.update(this.editingGoal.id, { progress: Number(this.editingProgress) });
       }
-      // APIモード時は進捗更新エンドポイントがないためローカルのみ反映
       this.showProgressModal = false;
       this.editingGoal = null;
       await this.loadAll();
@@ -312,70 +300,29 @@ function brainbase() {
         this.showToast('まずゴールを設定してください', 'error');
         return;
       }
-
       this.aiTasksLoading = true;
       this.aiSuggestedTasks = [];
-
       const today = new Date().toLocaleDateString('ja-JP', { year:'numeric', month:'long', day:'numeric', weekday:'long' });
-
       const goalLines = activeGoals.map(g => {
         const biz = this.businessById(g.businessId);
         return `- [${biz ? biz.name : '不明'}(id:${g.businessId})] "${g.title}" 進捗:${g.progress||0}% 期限:${g.targetDate||'未設定'} goalId:${g.id}`;
       }).join('\n');
-
-      const prompt = `あなたは一人社長のタスクアシスタントです。
-今日の日付：${today}
-
-アクティブなゴール一覧：
-${goalLines}
-
-これらのゴールの進捗を前進させるために、今日やるべき具体的なタスクを4〜5個提案してください。
-各タスクは30分〜2時間で完了できる粒度にしてください。
-
-以下のJSON形式のみで返してください（説明文不要）：
-{
-  "tasks": [
-    {
-      "title": "具体的なタスク名",
-      "businessId": 事業ID（数字）,
-      "goalId": ゴールID（数字）,
-      "priority": "high|normal|low",
-      "reason": "今日やる理由（20字以内）"
-    }
-  ]
-}`;
-
+      const prompt = `あなたは一人社長のタスクアシスタントです。\n今日の日付：${today}\n\nアクティブなゴール一覧：\n${goalLines}\n\nこれらのゴールの進捗を前進させるために、今日やるべき具体的なタスクを4〜5個提案してください。各タスクは30分〜2時間で完了できる粒度にしてください。\n\n以下のJSON形式のみで返してください（説明文不要）：\n{\n  "tasks": [\n    {\n      "title": "具体的なタスク名",\n      "businessId": 事業ID（数字）,\n      "goalId": ゴールID（数字）,\n      "priority": "high|normal|low",\n      "reason": "今日やる理由（20字以内）"\n    }\n  ]\n}`;
       try {
         const res = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': this.settings.claudeKey,
-            'anthropic-version': '2023-06-01',
-            'anthropic-dangerous-direct-browser-access': 'true',
-          },
-          body: JSON.stringify({
-            model: 'claude-haiku-4-5',
-            max_tokens: 1024,
-            messages: [{ role:'user', content: prompt }],
-          }),
+          headers: { 'Content-Type': 'application/json', 'x-api-key': this.settings.claudeKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+          body: JSON.stringify({ model: 'claude-haiku-4-5', max_tokens: 1024, messages: [{ role:'user', content: prompt }] }),
         });
-
-        if (!res.ok) {
-          const err = await res.json();
-          throw new Error(err.error?.message || 'API Error');
-        }
-
+        if (!res.ok) { const err = await res.json(); throw new Error(err.error?.message || 'API Error'); }
         const data = await res.json();
         const text = data.content[0].text.trim();
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (!jsonMatch) throw new Error('JSON形式で返ってきませんでした');
-
         const parsed = JSON.parse(jsonMatch[0]);
         this.aiSuggestedTasks = (parsed.tasks || []).map(t => ({ ...t, adopted: false }));
         this.aiTasksGenerated = true;
         this.$nextTick(() => lucide.createIcons());
-
       } catch (e) {
         this.showToast('エラー: ' + e.message, 'error');
       } finally {
@@ -384,26 +331,9 @@ ${goalLines}
     },
 
     async adoptAITask(task, index) {
-      const taskData = {
-        title:      task.title,
-        businessId: Number(task.businessId),
-        goalId:     Number(task.goalId),
-        project:    this.businessById(task.businessId)?.name || '',
-        priority:   task.priority || 'normal',
-        dueDate:    new Date().toISOString().slice(0, 10),
-        done:       false,
-        source:     'manual',
-        createdAt:  new Date(),
-      };
-      if (this.isApiMode) {
-        await fetch(`${API_BASE}/api/tasks`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(taskData),
-        });
-      } else {
-        await db.tasks.add(taskData);
-      }
+      const taskData = { title: task.title, businessId: Number(task.businessId), goalId: Number(task.goalId), project: this.businessById(task.businessId)?.name || '', priority: task.priority || 'normal', dueDate: new Date().toISOString().slice(0, 10), done: false, source: 'manual', createdAt: new Date() };
+      if (this.isApiMode) { await fetch(`${API_BASE}/api/tasks`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(taskData) }); }
+      else { await db.tasks.add(taskData); }
       this.aiSuggestedTasks[index].adopted = true;
       await this.loadAll();
       this.showToast('タスクに追加しました');
@@ -411,26 +341,9 @@ ${goalLines}
 
     async adoptAllAITasks() {
       for (const t of this.aiSuggestedTasks.filter(t => !t.adopted)) {
-        const taskData = {
-          title:      t.title,
-          businessId: Number(t.businessId),
-          goalId:     Number(t.goalId),
-          project:    this.businessById(t.businessId)?.name || '',
-          priority:   t.priority || 'normal',
-          dueDate:    new Date().toISOString().slice(0, 10),
-          done:       false,
-          source:     'manual',
-          createdAt:  new Date(),
-        };
-        if (this.isApiMode) {
-          await fetch(`${API_BASE}/api/tasks`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(taskData),
-          });
-        } else {
-          await db.tasks.add(taskData);
-        }
+        const taskData = { title: t.title, businessId: Number(t.businessId), goalId: Number(t.goalId), project: this.businessById(t.businessId)?.name || '', priority: t.priority || 'normal', dueDate: new Date().toISOString().slice(0, 10), done: false, source: 'manual', createdAt: new Date() };
+        if (this.isApiMode) { await fetch(`${API_BASE}/api/tasks`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(taskData) }); }
+        else { await db.tasks.add(taskData); }
       }
       this.aiSuggestedTasks = this.aiSuggestedTasks.map(t => ({ ...t, adopted: true }));
       await this.loadAll();
@@ -481,11 +394,7 @@ ${goalLines}
         createdAt:  new Date(),
       };
       if (this.isApiMode) {
-        await fetch(`${API_BASE}/api/tasks`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(taskData),
-        });
+        await fetch(`${API_BASE}/api/tasks`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(taskData) });
       } else {
         await db.tasks.add(taskData);
       }
@@ -503,15 +412,8 @@ ${goalLines}
       if (this.isApiMode) {
         const task = this.tasks.find(t => t.id === id);
         if (!task) return;
-        if (!task.done) {
-          await fetch(`${API_BASE}/api/tasks/${id}/complete`, { method: 'PUT' });
-        } else {
-          // 完了→未完了: APIではシンプルにDELETE→再追加は複雑なのでフロントのみ更新
-          // 実際には done フラグを戻すエンドポイントを追加するのが望ましい
-          // ここでは簡易対応としてAPIを呼ばずに表示上のみ切り替え
-          this.tasks = this.tasks.map(t => t.id === id ? { ...t, done: false, completedAt: null } : t);
-          return;
-        }
+        if (!task.done) { await fetch(`${API_BASE}/api/tasks/${id}/complete`, { method: 'PUT' }); }
+        else { this.tasks = this.tasks.map(t => t.id === id ? { ...t, done: false } : t); return; }
       } else {
         const t = await db.tasks.get(id);
         if (!t) return;
@@ -521,11 +423,8 @@ ${goalLines}
     },
 
     async deleteTask(id) {
-      if (this.isApiMode) {
-        await fetch(`${API_BASE}/api/tasks/${id}`, { method: 'DELETE' });
-      } else {
-        await db.tasks.delete(id);
-      }
+      if (this.isApiMode) { await fetch(`${API_BASE}/api/tasks/${id}`, { method: 'DELETE' }); }
+      else { await db.tasks.delete(id); }
       await this.loadAll();
       this.showToast('削除しました');
     },
@@ -536,13 +435,9 @@ ${goalLines}
     async addIdea() {
       if (!this.newIdea.title.trim()) return;
       if (this.isApiMode) {
-        await fetch(`${API_BASE}/api/ideas`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: this.newIdea.title.trim(), body: this.newIdea.body.trim() }),
-        });
+        await fetch(`${API_BASE}/api/ideas`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: this.newIdea.title.trim(), body: this.newIdea.body.trim() }) });
       } else {
-        await db.ideas.add({ title:this.newIdea.title.trim(), body:this.newIdea.body.trim(), converted:false, createdAt:new Date() });
+        await db.ideas.add({ title: this.newIdea.title.trim(), body: this.newIdea.body.trim(), converted: false, createdAt: new Date() });
       }
       await this.loadAll();
       this.showAddModal = false;
@@ -556,22 +451,18 @@ ${goalLines}
     },
 
     // ================================================
-    // DRAFTS CRUD (IndexedDBのみ)
+    // DRAFTS CRUD
     // ================================================
     async addDraft() {
       if (!this.newDraft.body.trim()) return;
-      if (!this.isApiMode) {
-        await db.drafts.add({ body:this.newDraft.body.trim(), createdAt:new Date() });
-      }
+      if (!this.isApiMode) { await db.drafts.add({ body: this.newDraft.body.trim(), createdAt: new Date() }); }
       await this.loadAll();
       this.showAddModal = false;
       this.showToast('下書きを保存しました');
     },
 
     copyDraft(draft) {
-      navigator.clipboard.writeText(draft.body)
-        .then(() => this.showToast('コピーしました'))
-        .catch(() => this.showToast('コピー失敗', 'error'));
+      navigator.clipboard.writeText(draft.body).then(() => this.showToast('コピーしました')).catch(() => this.showToast('コピー失敗', 'error'));
     },
 
     postToX(draft) {
@@ -585,31 +476,9 @@ ${goalLines}
       if (!this.magicInput.trim() || !this.settings.claudeKey) return;
       this.magicLoading = true;
       this.magicResult  = null;
-
-      const prompt = `以下のアイデアを実現するプロジェクト計画をJSON形式で返してください。
-
-アイデア: ${this.magicInput}
-
-JSON形式のみ（説明不要）：
-{
-  "projectName": "プロジェクト名",
-  "summary": "一行説明",
-  "tasks": [
-    { "title": "タスク名", "priority": "high|normal|low", "estimatedDays": 数字 }
-  ]
-}`;
-
+      const prompt = `以下のアイデアを実現するプロジェクト計画をJSON形式で返してください。\n\nアイデア: ${this.magicInput}\n\nJSON形式のみ（説明不要）：\n{\n  "projectName": "プロジェクト名",\n  "summary": "一行説明",\n  "tasks": [\n    { "title": "タスク名", "priority": "high|normal|low", "estimatedDays": 数字 }\n  ]\n}`;
       try {
-        const res = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': this.settings.claudeKey,
-            'anthropic-version': '2023-06-01',
-            'anthropic-dangerous-direct-browser-access': 'true',
-          },
-          body: JSON.stringify({ model:'claude-haiku-4-5', max_tokens:1024, messages:[{role:'user',content:prompt}] }),
-        });
+        const res = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': this.settings.claudeKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }, body: JSON.stringify({ model:'claude-haiku-4-5', max_tokens:1024, messages:[{role:'user',content:prompt}] }) });
         const data = await res.json();
         const text = data.content[0].text.trim();
         const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -625,16 +494,9 @@ JSON形式のみ（説明不要）：
     async adoptMagicResult() {
       if (!this.magicResult) return;
       for (const t of this.magicResult.tasks) {
-        const taskData = { title:t.title, project:this.magicResult.projectName, priority:t.priority||'normal', dueDate:'', done:false, source:'manual', createdAt:new Date() };
-        if (this.isApiMode) {
-          await fetch(`${API_BASE}/api/tasks`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(taskData),
-          });
-        } else {
-          await db.tasks.add(taskData);
-        }
+        const taskData = { title: t.title, project: this.magicResult.projectName, priority: t.priority || 'normal', dueDate: '', done: false, source: 'manual', createdAt: new Date() };
+        if (this.isApiMode) { await fetch(`${API_BASE}/api/tasks`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(taskData) }); }
+        else { await db.tasks.add(taskData); }
       }
       await this.loadAll();
       this.showMagicModal = false;
@@ -650,7 +512,7 @@ JSON形式のみ（説明不要）：
     // ================================================
     async saveSettings() {
       if (!this.isApiMode) {
-        await db.settings.put({ id:1, claudeKey:this.settings.claudeKey, githubToken:this.settings.githubToken });
+        await db.settings.put({ id:1, claudeKey: this.settings.claudeKey, githubToken: this.settings.githubToken });
       }
       this.showToast('保存しました');
     },
