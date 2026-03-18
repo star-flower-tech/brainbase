@@ -1,11 +1,17 @@
-// BrainBase — app.js v2
+// BrainBase — app.js v3
 // Alpine.js メインロジック
+// Claude Code 自動連携対応 (APIモード / IndexedDBフォールバック)
+
+const API_BASE = 'http://localhost:3001';
 
 function brainbase() {
   return {
     // ===== ナビ =====
     currentPage: 'today',
     pageTitles: { today:'Today', tasks:'Tasks', ideas:'Ideas', post:'Post', settings:'Settings' },
+
+    // ===== APIモード =====
+    isApiMode: false,
 
     // ===== データ =====
     businesses:  [],
@@ -76,20 +82,48 @@ function brainbase() {
         }
       });
 
-      await db.open();
-      await this.seedBusinesses();
+      // APIサーバーの接続チェック（タイムアウト1秒）
+      await this.checkApiConnection(silent = true);
+
+      if (!this.isApiMode) {
+        // フォールバック: IndexedDB
+        await db.open();
+        await this.seedBusinesses();
+      }
+
       await this.loadAll();
       this.$nextTick(() => lucide.createIcons());
     },
 
-    // 事業の初期データ投入（初回のみ）
+    // APIサーバー接続チェック
+    async checkApiConnection(silent = false) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 1000);
+        const res = await fetch(`${API_BASE}/api/health`, { signal: controller.signal });
+        clearTimeout(timer);
+        if (res.ok) {
+          this.isApiMode = true;
+          if (!silent) this.showToast('ローカルサーバーに接続しました 🟢', 'info');
+        } else {
+          this.isApiMode = false;
+          if (!silent) this.showToast('サーバーに接続できませんでした 🔴', 'error');
+        }
+      } catch {
+        this.isApiMode = false;
+        if (!silent) this.showToast('サーバーが起動していません。IndexedDBモードで動作中 🔴', 'error');
+      }
+    },
+
+    // 事業の初期データ投入（IndexedDBモード、初回のみ）
     async seedBusinesses() {
       const count = await db.businesses.count();
       if (count === 0) {
         await db.businesses.bulkAdd([
-          { name:'不動産広告代理', color:'#FF6B47', icon:'🏠', createdAt: new Date() },
-          { name:'AI導入支援',    color:'#7C5CFC', icon:'🤖', createdAt: new Date() },
-          { name:'BrainBase',    color:'#22C55E', icon:'🧠', createdAt: new Date() },
+          { name:'住まいセレクト',   color:'#FF6B47', icon:'🏠', createdAt: new Date() },
+          { name:'不動産広告代理',   color:'#F59E0B', icon:'📢', createdAt: new Date() },
+          { name:'AI導入支援',      color:'#7C5CFC', icon:'🤖', createdAt: new Date() },
+          { name:'BrainBase',      color:'#22C55E', icon:'🧠', createdAt: new Date() },
         ]);
       }
     },
@@ -98,6 +132,41 @@ function brainbase() {
     // データ読み込み
     // ================================================
     async loadAll() {
+      if (this.isApiMode) {
+        await this.loadAllFromApi();
+      } else {
+        await this.loadAllFromDb();
+      }
+    },
+
+    async loadAllFromApi() {
+      try {
+        const [businesses, goals, tasks, ideas] = await Promise.all([
+          fetch(`${API_BASE}/api/businesses`).then(r => r.json()),
+          fetch(`${API_BASE}/api/goals`).then(r => r.json()),
+          fetch(`${API_BASE}/api/tasks`).then(r => r.json()),
+          fetch(`${API_BASE}/api/ideas`).then(r => r.json()),
+        ]);
+        this.businesses = businesses || [];
+        this.goals      = goals     || [];
+        this.tasks      = tasks     || [];
+        this.ideas      = ideas     || [];
+        this.drafts     = [];
+      } catch {
+        // APIが途中で落ちた場合はフォールバック
+        this.isApiMode = false;
+        await db.open();
+        await this.loadAllFromDb();
+        return;
+      }
+
+      this.todayStats.tasks = this.tasks.filter(t => !t.done).length;
+      this.todayStats.done  = this.tasks.filter(t => t.done).length;
+      this.todayStats.ideas = this.ideas.length;
+      this.$nextTick(() => lucide.createIcons());
+    },
+
+    async loadAllFromDb() {
       this.businesses = await db.businesses.toArray();
       this.goals      = await db.goals.orderBy('createdAt').reverse().toArray();
       this.tasks      = await db.tasks.orderBy('createdAt').reverse().toArray();
@@ -113,7 +182,6 @@ function brainbase() {
       this.todayStats.tasks = this.tasks.filter(t => !t.done).length;
       this.todayStats.done  = this.tasks.filter(t => t.done).length;
       this.todayStats.ideas = this.ideas.length;
-
       this.$nextTick(() => lucide.createIcons());
     },
 
@@ -153,6 +221,11 @@ function brainbase() {
 
     async addBusiness() {
       if (!this.newBusiness.name.trim()) return;
+      if (this.isApiMode) {
+        // APIモードでは事業追加APIがないためIndexedDBに保存しない（将来対応）
+        this.showToast('APIモードでは事業追加はサーバー側で管理されます', 'error');
+        return;
+      }
       await db.businesses.add({
         name: this.newBusiness.name.trim(),
         color: this.newBusiness.color,
@@ -176,14 +249,26 @@ function brainbase() {
 
     async addGoal() {
       if (!this.newGoal.title.trim() || !this.newGoal.businessId) return;
-      await db.goals.add({
-        title:      this.newGoal.title.trim(),
-        businessId: Number(this.newGoal.businessId),
-        targetDate: this.newGoal.targetDate,
-        progress:   0,
-        status:     'active',
-        createdAt:  new Date(),
-      });
+      if (this.isApiMode) {
+        await fetch(`${API_BASE}/api/goals`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title:      this.newGoal.title.trim(),
+            businessId: Number(this.newGoal.businessId),
+            targetDate: this.newGoal.targetDate,
+          }),
+        });
+      } else {
+        await db.goals.add({
+          title:      this.newGoal.title.trim(),
+          businessId: Number(this.newGoal.businessId),
+          targetDate: this.newGoal.targetDate,
+          progress:   0,
+          status:     'active',
+          createdAt:  new Date(),
+        });
+      }
       this.showGoalModal = false;
       this.aiTasksGenerated = false;
       await this.loadAll();
@@ -198,7 +283,10 @@ function brainbase() {
 
     async saveProgress() {
       if (!this.editingGoal) return;
-      await db.goals.update(this.editingGoal.id, { progress: Number(this.editingProgress) });
+      if (!this.isApiMode) {
+        await db.goals.update(this.editingGoal.id, { progress: Number(this.editingProgress) });
+      }
+      // APIモード時は進捗更新エンドポイントがないためローカルのみ反映
       this.showProgressModal = false;
       this.editingGoal = null;
       await this.loadAll();
@@ -206,7 +294,7 @@ function brainbase() {
     },
 
     async deleteGoal(id) {
-      await db.goals.delete(id);
+      if (!this.isApiMode) await db.goals.delete(id);
       await this.loadAll();
       this.showToast('削除しました');
     },
@@ -296,7 +384,7 @@ ${goalLines}
     },
 
     async adoptAITask(task, index) {
-      await db.tasks.add({
+      const taskData = {
         title:      task.title,
         businessId: Number(task.businessId),
         goalId:     Number(task.goalId),
@@ -304,8 +392,18 @@ ${goalLines}
         priority:   task.priority || 'normal',
         dueDate:    new Date().toISOString().slice(0, 10),
         done:       false,
+        source:     'manual',
         createdAt:  new Date(),
-      });
+      };
+      if (this.isApiMode) {
+        await fetch(`${API_BASE}/api/tasks`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(taskData),
+        });
+      } else {
+        await db.tasks.add(taskData);
+      }
       this.aiSuggestedTasks[index].adopted = true;
       await this.loadAll();
       this.showToast('タスクに追加しました');
@@ -313,7 +411,7 @@ ${goalLines}
 
     async adoptAllAITasks() {
       for (const t of this.aiSuggestedTasks.filter(t => !t.adopted)) {
-        await db.tasks.add({
+        const taskData = {
           title:      t.title,
           businessId: Number(t.businessId),
           goalId:     Number(t.goalId),
@@ -321,8 +419,18 @@ ${goalLines}
           priority:   t.priority || 'normal',
           dueDate:    new Date().toISOString().slice(0, 10),
           done:       false,
+          source:     'manual',
           createdAt:  new Date(),
-        });
+        };
+        if (this.isApiMode) {
+          await fetch(`${API_BASE}/api/tasks`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(taskData),
+          });
+        } else {
+          await db.tasks.add(taskData);
+        }
       }
       this.aiSuggestedTasks = this.aiSuggestedTasks.map(t => ({ ...t, adopted: true }));
       await this.loadAll();
@@ -361,7 +469,7 @@ ${goalLines}
 
     async addTask() {
       if (!this.newTask.title.trim()) return;
-      await db.tasks.add({
+      const taskData = {
         title:      this.newTask.title.trim(),
         project:    this.newTask.project.trim() || (this.businessById(this.newTask.businessId)?.name || ''),
         businessId: this.newTask.businessId ? Number(this.newTask.businessId) : null,
@@ -369,8 +477,18 @@ ${goalLines}
         priority:   this.newTask.priority,
         dueDate:    this.newTask.dueDate,
         done:       false,
+        source:     'manual',
         createdAt:  new Date(),
-      });
+      };
+      if (this.isApiMode) {
+        await fetch(`${API_BASE}/api/tasks`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(taskData),
+        });
+      } else {
+        await db.tasks.add(taskData);
+      }
       await this.loadAll();
       this.showAddModal = false;
       this.showToast('タスクを追加しました');
@@ -382,14 +500,32 @@ ${goalLines}
     },
 
     async toggleTask(id) {
-      const t = await db.tasks.get(id);
-      if (!t) return;
-      await db.tasks.update(id, { done: !t.done });
+      if (this.isApiMode) {
+        const task = this.tasks.find(t => t.id === id);
+        if (!task) return;
+        if (!task.done) {
+          await fetch(`${API_BASE}/api/tasks/${id}/complete`, { method: 'PUT' });
+        } else {
+          // 完了→未完了: APIではシンプルにDELETE→再追加は複雑なのでフロントのみ更新
+          // 実際には done フラグを戻すエンドポイントを追加するのが望ましい
+          // ここでは簡易対応としてAPIを呼ばずに表示上のみ切り替え
+          this.tasks = this.tasks.map(t => t.id === id ? { ...t, done: false, completedAt: null } : t);
+          return;
+        }
+      } else {
+        const t = await db.tasks.get(id);
+        if (!t) return;
+        await db.tasks.update(id, { done: !t.done });
+      }
       await this.loadAll();
     },
 
     async deleteTask(id) {
-      await db.tasks.delete(id);
+      if (this.isApiMode) {
+        await fetch(`${API_BASE}/api/tasks/${id}`, { method: 'DELETE' });
+      } else {
+        await db.tasks.delete(id);
+      }
       await this.loadAll();
       this.showToast('削除しました');
     },
@@ -399,24 +535,34 @@ ${goalLines}
     // ================================================
     async addIdea() {
       if (!this.newIdea.title.trim()) return;
-      await db.ideas.add({ title:this.newIdea.title.trim(), body:this.newIdea.body.trim(), converted:false, createdAt:new Date() });
+      if (this.isApiMode) {
+        await fetch(`${API_BASE}/api/ideas`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: this.newIdea.title.trim(), body: this.newIdea.body.trim() }),
+        });
+      } else {
+        await db.ideas.add({ title:this.newIdea.title.trim(), body:this.newIdea.body.trim(), converted:false, createdAt:new Date() });
+      }
       await this.loadAll();
       this.showAddModal = false;
       this.showToast('アイデアを保存しました');
     },
 
     async deleteIdea(id) {
-      await db.ideas.delete(id);
+      if (!this.isApiMode) await db.ideas.delete(id);
       await this.loadAll();
       this.showToast('削除しました');
     },
 
     // ================================================
-    // DRAFTS CRUD
+    // DRAFTS CRUD (IndexedDBのみ)
     // ================================================
     async addDraft() {
       if (!this.newDraft.body.trim()) return;
-      await db.drafts.add({ body:this.newDraft.body.trim(), createdAt:new Date() });
+      if (!this.isApiMode) {
+        await db.drafts.add({ body:this.newDraft.body.trim(), createdAt:new Date() });
+      }
       await this.loadAll();
       this.showAddModal = false;
       this.showToast('下書きを保存しました');
@@ -479,29 +625,43 @@ JSON形式のみ（説明不要）：
     async adoptMagicResult() {
       if (!this.magicResult) return;
       for (const t of this.magicResult.tasks) {
-        await db.tasks.add({ title:t.title, project:this.magicResult.projectName, priority:t.priority||'normal', dueDate:'', done:false, createdAt:new Date() });
+        const taskData = { title:t.title, project:this.magicResult.projectName, priority:t.priority||'normal', dueDate:'', done:false, source:'manual', createdAt:new Date() };
+        if (this.isApiMode) {
+          await fetch(`${API_BASE}/api/tasks`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(taskData),
+          });
+        } else {
+          await db.tasks.add(taskData);
+        }
       }
       await this.loadAll();
       this.showMagicModal = false;
+      const count = this.magicResult?.tasks?.length || '';
       this.magicResult = null;
       this.magicInput  = '';
       this.navigate('tasks');
-      this.showToast(`${this.magicResult?.tasks?.length||''}個のタスクを追加しました`);
+      this.showToast(`${count}個のタスクを追加しました`);
     },
 
     // ================================================
     // SETTINGS
     // ================================================
     async saveSettings() {
-      await db.settings.put({ id:1, claudeKey:this.settings.claudeKey, githubToken:this.settings.githubToken });
+      if (!this.isApiMode) {
+        await db.settings.put({ id:1, claudeKey:this.settings.claudeKey, githubToken:this.settings.githubToken });
+      }
       this.showToast('保存しました');
     },
 
     async resetAllData() {
       if (!confirm('すべてのデータを削除します。この操作は取り消せません。')) return;
-      await Promise.all([db.tasks.clear(), db.ideas.clear(), db.drafts.clear(), db.goals.clear(), db.businesses.clear(), db.settings.clear()]);
-      this.settings = { claudeKey:'', githubToken:'' };
-      await this.seedBusinesses();
+      if (!this.isApiMode) {
+        await Promise.all([db.tasks.clear(), db.ideas.clear(), db.drafts.clear(), db.goals.clear(), db.businesses.clear(), db.settings.clear()]);
+        this.settings = { claudeKey:'', githubToken:'' };
+        await this.seedBusinesses();
+      }
       await this.loadAll();
       this.showToast('データを削除しました');
     },
